@@ -329,7 +329,17 @@ try {
   answer = 'Не удалось обратиться к модели. Попробуйте позже.';
 }
 
-const leadIntent = /(запис|заявк|прием|приём|консультац|перезвон|оставить контакт)/i.test(message);
+const leadIntentPatterns = [
+  /запис/i,
+  /заявк/i,
+  /перезвон/i,
+  /оставить контакт/i,
+  /связаться/i,
+  /хочу\s+(?:на\s+)?(?:прием|приём|консультац)/i,
+  /нужно\s+записаться/i,
+  /можно\s+записаться/i,
+];
+const leadIntent = leadIntentPatterns.some((pattern) => pattern.test(message));
 const phoneMatch = message.match(/(?:\+7|8)[\s\-()]*\d[\d\s\-()]{8,}/);
 const nameMatch = message.match(/меня зовут\s+([A-Za-zА-Яа-яЁё\-]+)/i);
 let leadCreated = false;
@@ -371,6 +381,8 @@ if (leadIntent && phoneMatch) {
   if (!/заявк/i.test(answer)) {
     answer += '\n\nЯ зафиксировал заявку и передал ее администратору клиники.';
   }
+} else if (leadIntent) {
+  answer += '\n\nЕсли хотите, напишите имя и телефон, и я передам заявку администратору клиники.';
 }
 
 await insertMessage(conversation.id, 'assistant', answer);
