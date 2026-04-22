@@ -1,11 +1,13 @@
 # HTTPS variant: run Caddy in front of n8n so Telegram Bot API's setWebhook
 # accepts the URL. Requires a real domain with A/AAAA records pointing at
-# the VPS (N8N_HOST in .env) and ports 80 + 443 open.
+# the VPS (N8N_HOST in .env). Ports:
+#   - 80  (host) -> 80  (caddy)  — HTTP-01 challenge + redirect
+#   - 8443 (host) -> 443 (caddy) — HTTPS (we avoid host 443 because other
+#                                  services on this VPS may already occupy it;
+#                                  Telegram Bot API accepts 443/80/88/8443).
 #
 # Start with:
 #   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
-#
-# Caddy auto-provisions a Let's Encrypt certificate for N8N_HOST.
 
 services:
   n8n:
@@ -15,8 +17,8 @@ services:
     environment:
       N8N_PROTOCOL: https
       N8N_PORT: 5678
-      N8N_EDITOR_BASE_URL: https://${N8N_HOST}
-      WEBHOOK_URL: https://${N8N_HOST}/
+      N8N_EDITOR_BASE_URL: https://${N8N_HOST}:${N8N_HTTPS_PORT:-8443}
+      WEBHOOK_URL: https://${N8N_HOST}:${N8N_HTTPS_PORT:-8443}/
 
   caddy:
     image: caddy:2
@@ -26,7 +28,7 @@ services:
       - n8n
     ports:
       - "80:80"
-      - "443:443"
+      - "${N8N_HTTPS_PORT:-8443}:443"
     environment:
       N8N_HOST: ${N8N_HOST}
     volumes:
