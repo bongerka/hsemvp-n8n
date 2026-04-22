@@ -15,7 +15,9 @@ services:
       WEBHOOK_URL: ${WEBHOOK_URL}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
       TZ: ${GENERIC_TIMEZONE}
-      N8N_RUNNERS_ENABLED: "true"
+      N8N_RUNNERS_ENABLED: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      NODE_FUNCTION_ALLOW_BUILTIN: "https,crypto"
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
     volumes:
       - n8n_data:/home/node/.n8n
