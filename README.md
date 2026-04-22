@@ -56,7 +56,7 @@ GENERIC_TIMEZONE=
 Для текущего MVP `docker-compose.yml` также включает:
 
 - `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`
-- `NODE_FUNCTION_ALLOW_BUILTIN=https,crypto`
+- `NODE_FUNCTION_ALLOW_BUILTIN=https,crypto,url`
 - `N8N_RUNNERS_ENABLED=false`
 
 Это сделано специально для быстрого MVP, где часть логики живет в `Code` nodes и использует встроенный модуль `https`.

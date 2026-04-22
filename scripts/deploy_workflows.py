@@ -25,6 +25,7 @@ N8N_PASSWORD = os.environ.get("N8N_PASSWORD", "")
 
 PUBLIC_EVENT_CODE = r"""
 const https = require('https');
+const { URL } = require('url');
 
 function requestJson(url, options = {}) {
   const parsedUrl = new URL(url);
@@ -117,6 +118,7 @@ return [{ json: { ok: true, eventName } }];
 
 WEB_CHAT_CODE = r"""
 const https = require('https');
+const { URL, URLSearchParams } = require('url');
 
 function requestJson(url, options = {}) {
   const parsedUrl = new URL(url);
@@ -388,6 +390,7 @@ return [
 
 KNOWLEDGE_INGEST_CODE = r"""
 const https = require('https');
+const { URL } = require('url');
 
 function requestJson(url, options = {}) {
   const parsedUrl = new URL(url);
