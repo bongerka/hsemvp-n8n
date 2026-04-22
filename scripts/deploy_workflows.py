@@ -400,6 +400,385 @@ return [
 """.strip()
 
 
+TELEGRAM_BOT_CODE = r"""
+const https = require('https');
+const { URL, URLSearchParams } = require('url');
+
+function requestJson(url, options = {}) {
+  const parsedUrl = new URL(url);
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        protocol: parsedUrl.protocol,
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 443,
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        method: options.method ?? 'GET',
+        headers: options.headers ?? {},
+      },
+      (response) => {
+        let raw = '';
+        response.on('data', (chunk) => {
+          raw += chunk;
+        });
+        response.on('end', () => {
+          let data = null;
+          if (raw) {
+            try {
+              data = JSON.parse(raw);
+            } catch {
+              data = raw;
+            }
+          }
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            resolve(data);
+            return;
+          }
+          reject(new Error(typeof data === 'string' ? data : JSON.stringify(data)));
+        });
+      },
+    );
+
+    request.on('error', reject);
+
+    if (options.body !== undefined) {
+      request.write(typeof options.body === 'string' ? options.body : JSON.stringify(options.body));
+    }
+
+    request.end();
+  });
+}
+
+function downloadBinary(url) {
+  const parsedUrl = new URL(url);
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        protocol: parsedUrl.protocol,
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 443,
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        method: 'GET',
+      },
+      (response) => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`download failed: ${response.statusCode}`));
+          return;
+        }
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => resolve(Buffer.concat(chunks)));
+      },
+    );
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function multipartForm(fields) {
+  const boundary = '----n8n' + Math.random().toString(36).slice(2);
+  const parts = [];
+  for (const [name, value] of Object.entries(fields)) {
+    if (value && typeof value === 'object' && value.buffer && value.filename) {
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from(`Content-Disposition: form-data; name="${name}"; filename="${value.filename}"\r\n`));
+      parts.push(Buffer.from(`Content-Type: ${value.contentType || 'application/octet-stream'}\r\n\r\n`));
+      parts.push(value.buffer);
+      parts.push(Buffer.from('\r\n'));
+    } else if (value !== undefined && value !== null) {
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from(`Content-Disposition: form-data; name="${name}"\r\n\r\n`));
+      parts.push(Buffer.from(String(value)));
+      parts.push(Buffer.from('\r\n'));
+    }
+  }
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+function postMultipart(url, fields) {
+  const parsedUrl = new URL(url);
+  const { body, contentType } = multipartForm(fields);
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        protocol: parsedUrl.protocol,
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 443,
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': body.length,
+        },
+      },
+      (response) => {
+        let raw = '';
+        response.on('data', (chunk) => { raw += chunk; });
+        response.on('end', () => {
+          let data = null;
+          if (raw) {
+            try { data = JSON.parse(raw); } catch { data = raw; }
+          }
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            resolve(data);
+            return;
+          }
+          reject(new Error(typeof data === 'string' ? data : JSON.stringify(data)));
+        });
+      },
+    );
+    request.on('error', reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+const update = $input.first().json.body ?? $input.first().json ?? {};
+const message = update.message || update.edited_message || {};
+const chatId = message.chat?.id;
+const telegramUserId = message.from?.id ? String(message.from.id) : null;
+const telegramUsername = message.from?.username || null;
+const text = (message.text || message.caption || '').trim();
+const voice = message.voice || message.audio || null;
+
+if (!chatId) {
+  return [{ json: { ok: false, error: 'no_chat_id' } }];
+}
+
+const token = $env.TELEGRAM_BOT_TOKEN;
+const botApi = `https://api.telegram.org/bot${token}`;
+
+async function sendMessage(textOut) {
+  await requestJson(`${botApi}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      chat_id: chatId,
+      text: textOut,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    },
+  });
+}
+
+async function sendChatAction(action) {
+  try {
+    await requestJson(`${botApi}/sendChatAction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { chat_id: chatId, action },
+    });
+  } catch {}
+}
+
+const supabaseHeaders = {
+  'Content-Type': 'application/json',
+  apikey: $env.SUPABASE_SERVICE_ROLE_KEY,
+  Authorization: `Bearer ${$env.SUPABASE_SERVICE_ROLE_KEY}`,
+};
+
+async function supabase(path, options = {}) {
+  return requestJson(`${$env.SUPABASE_URL}${path}`, {
+    ...options,
+    headers: { ...supabaseHeaders, ...(options.headers ?? {}) },
+  });
+}
+
+async function insertEvent(eventName, properties = {}) {
+  await supabase('/rest/v1/event_logs', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: {
+      event_name: eventName,
+      actor_type: 'telegram',
+      actor_id: telegramUserId,
+      properties,
+    },
+  });
+}
+
+async function insertMessage(conversationId, role, body, messageType = 'text') {
+  await supabase('/rest/v1/messages', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: {
+      conversation_id: conversationId,
+      role,
+      message_text: body,
+      message_type: messageType,
+    },
+  });
+}
+
+// 1. Resolve user question: text or voice-to-text.
+let userText = text;
+let messageType = 'text';
+
+if (!userText && voice) {
+  messageType = 'voice';
+  await sendChatAction('typing');
+  try {
+    const fileInfo = await requestJson(`${botApi}/getFile?file_id=${encodeURIComponent(voice.file_id)}`);
+    const filePath = fileInfo?.result?.file_path;
+    if (!filePath) throw new Error('no_file_path');
+    const binary = await downloadBinary(`https://api.telegram.org/file/bot${token}/${filePath}`);
+    const sttResult = await postMultipart('https://api.openai.com/v1/audio/transcriptions', {
+      file: { buffer: binary, filename: 'voice.ogg', contentType: voice.mime_type || 'audio/ogg' },
+      model: 'whisper-1',
+      language: 'ru',
+    });
+    userText = (sttResult?.text || '').trim();
+    if (userText) {
+      await insertEvent('voice_transcribed', { length: userText.length });
+    }
+  } catch (error) {
+    await sendMessage('Не удалось расшифровать голосовое сообщение. Попробуйте текстом.');
+    return [{ json: { ok: false, error: 'stt_failed' } }];
+  }
+}
+
+if (!userText) {
+  await sendMessage('Напишите вопрос текстом или голосовым сообщением.');
+  return [{ json: { ok: false, error: 'empty_message' } }];
+}
+
+// 2. Find or create conversation.
+const conversationParams = new URLSearchParams({
+  source: 'eq.telegram',
+  external_user_id: `eq.${telegramUserId}`,
+  select: 'id,source,external_user_id,patient_name,telegram_username,created_at',
+  limit: '1',
+});
+
+let conversation = await supabase(`/rest/v1/conversations?${conversationParams.toString()}`);
+conversation = Array.isArray(conversation) ? conversation[0] : conversation;
+let conversationCreated = false;
+
+if (!conversation) {
+  const created = await supabase('/rest/v1/conversations', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: {
+      source: 'telegram',
+      external_user_id: telegramUserId,
+      telegram_username: telegramUsername,
+      patient_name: null,
+    },
+  });
+  conversation = Array.isArray(created) ? created[0] : created;
+  conversationCreated = true;
+}
+
+if (conversationCreated) {
+  await insertEvent('chat_started', { source: 'telegram', telegramUserId, telegramUsername });
+}
+
+await insertMessage(conversation.id, 'user', userText, messageType);
+await insertEvent('telegram_message_received', { telegramUserId, messageType });
+await sendChatAction('typing');
+
+// 3. RAG retrieval.
+let context = '';
+let matches = [];
+try {
+  const embeddingData = await requestJson('https://api.openai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${$env.OPENAI_API_KEY}`,
+    },
+    body: { model: 'text-embedding-3-small', input: userText },
+  });
+  const embedding = embeddingData?.data?.[0]?.embedding;
+  if (Array.isArray(embedding)) {
+    const rpcMatches = await supabase('/rest/v1/rpc/match_knowledge_chunks', {
+      method: 'POST',
+      body: { query_embedding: embedding, match_count: 5, category_filter: null },
+    });
+    matches = Array.isArray(rpcMatches) ? rpcMatches : [];
+    context = matches
+      .map((item, index) => `[${index + 1}] ${item.title ?? 'Документ'}\n${item.chunk_text ?? ''}`)
+      .join('\n\n');
+  }
+} catch {
+  context = '';
+}
+
+const systemPrompt = [
+  'Ты AI-помощник администратора клиники.',
+  'Ты отвечаешь только на административные вопросы: цены, режим работы, подготовка к визиту, правила записи и сбор контактов.',
+  'Ты не ставишь диагнозы и не даешь медицинские рекомендации как врач.',
+  'Если в контексте не хватает фактов, честно говори, что это нужно уточнить у администратора.',
+  context ? `Контекст из базы знаний:\n${context}` : 'Контекст из базы знаний пока пуст.',
+].join('\n\n');
+
+let answer = 'Извините, сейчас не получилось подготовить ответ. Попробуйте еще раз чуть позже.';
+try {
+  const chatData = await requestJson('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${$env.OPENAI_API_KEY}`,
+    },
+    body: {
+      model: 'gpt-4o-mini',
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userText },
+      ],
+    },
+  });
+  answer = chatData?.choices?.[0]?.message?.content?.trim() || answer;
+} catch {
+  answer = 'Не удалось обратиться к модели. Попробуйте позже.';
+}
+
+// 4. Lead intent.
+const leadIntentPatterns = [
+  /запис/i, /заявк/i, /перезвон/i, /оставить контакт/i, /связаться/i,
+  /хочу\s+(?:на\s+)?(?:прием|приём|консультац)/i,
+  /нужно\s+записаться/i, /можно\s+записаться/i,
+];
+const leadIntent = leadIntentPatterns.some((p) => p.test(userText));
+const phoneMatch = userText.match(/(?:\+7|8)[\s\-()]*\d[\d\s\-()]{8,}/);
+const nameMatch = userText.match(/меня зовут\s+([A-Za-zА-Яа-яЁё\-]+)/i);
+
+if (leadIntent) {
+  await insertEvent('lead_started', { source: 'telegram', telegramUserId });
+}
+
+if (leadIntent && phoneMatch) {
+  await supabase('/rest/v1/leads', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: {
+      patient_name: nameMatch?.[1] ?? null,
+      phone: phoneMatch[0],
+      telegram_username: telegramUsername,
+      source: 'telegram',
+      service_interest: userText.slice(0, 180),
+      desired_date: null,
+      notes: userText,
+      status: 'new',
+    },
+  });
+  await insertEvent('lead_created', { source: 'telegram', telegramUserId, phone: phoneMatch[0] });
+  if (!/заявк/i.test(answer)) {
+    answer += '\n\nЯ зафиксировал заявку и передал ее администратору клиники.';
+  }
+} else if (leadIntent) {
+  answer += '\n\nЕсли хотите, напишите имя и телефон — я передам заявку администратору клиники.';
+}
+
+await insertMessage(conversation.id, 'assistant', answer);
+await sendMessage(answer);
+
+return [{ json: { ok: true, conversationId: conversation.id, matchesFound: matches.length } }];
+""".strip()
+
+
 KNOWLEDGE_INGEST_CODE = r"""
 const https = require('https');
 const { URL } = require('url');
@@ -680,6 +1059,7 @@ def main() -> None:
         ("public-event", "public-event", PUBLIC_EVENT_CODE),
         ("web-chat", "web-chat", WEB_CHAT_CODE),
         ("knowledge-ingest", "knowledge-ingest", KNOWLEDGE_INGEST_CODE),
+        ("telegram-bot", "telegram-bot", TELEGRAM_BOT_CODE),
     ]
 
     for name, path, code in definitions:
