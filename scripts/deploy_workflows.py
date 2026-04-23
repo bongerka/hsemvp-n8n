@@ -297,10 +297,38 @@ try {
   context = '';
 }
 
+const leadIntentPatterns = [
+  /запис/i,
+  /заявк/i,
+  /перезвон/i,
+  /оставить контакт/i,
+  /связаться/i,
+  /хочу\s+(?:на\s+)?(?:прием|приём|консультац)/i,
+  /нужно\s+записаться/i,
+  /можно\s+записаться/i,
+];
+const leadIntent = leadIntentPatterns.some((pattern) => pattern.test(message));
+const phoneMatchRaw = message.match(/(?:\+7|8)[\s\-()]*\d[\d\s\-()]{8,}/);
+const phoneNormalized = phoneMatchRaw ? phoneMatchRaw[0].replace(/[\s()\-]/g, '').trim() : null;
+const explicitName = message.match(/меня зовут\s+([А-ЯЁа-яёA-Za-z\-]+)/i);
+let detectedName = explicitName ? explicitName[1] : null;
+if (!detectedName) {
+  const nameCandidate = message.match(/(?:^|[^A-Za-zА-Яа-яЁё])([А-ЯЁ][а-яё]{1,})\b/);
+  if (nameCandidate) detectedName = nameCandidate[1];
+}
+const effectiveName = patientName ?? detectedName;
+const willCreateLead = Boolean(phoneNormalized);
+
+if (leadIntent && !willCreateLead) {
+  await insertEvent('lead_started', { source: 'web', sessionId, message });
+}
+
 const systemPrompt = [
   'Ты AI-помощник администратора клиники.',
   'Ты отвечаешь только на административные вопросы: цены, режим работы, подготовка к визиту, правила записи и сбор контактов.',
   'Ты не ставишь диагнозы и не даешь медицинские рекомендации как врач.',
+  'Важно про заявки: если пользователь присылает телефон (и желательно имя), система АВТОМАТИЧЕСКИ создаст заявку и передаст её администратору. Никогда не говори "я не могу создать заявку" — это неправда.',
+  'Если пользователь хочет записаться, но телефон ещё не прислал — коротко попроси имя и номер телефона.',
   'Если в контексте не хватает фактов, честно говори, что это нужно уточнить у администратора.',
   context ? `Контекст из базы знаний:\n${context}` : 'Контекст из базы знаний пока пуст.',
 ].join('\n\n');
@@ -329,60 +357,27 @@ try {
   answer = 'Не удалось обратиться к модели. Попробуйте позже.';
 }
 
-const leadIntentPatterns = [
-  /запис/i,
-  /заявк/i,
-  /перезвон/i,
-  /оставить контакт/i,
-  /связаться/i,
-  /хочу\s+(?:на\s+)?(?:прием|приём|консультац)/i,
-  /нужно\s+записаться/i,
-  /можно\s+записаться/i,
-];
-const leadIntent = leadIntentPatterns.some((pattern) => pattern.test(message));
-const phoneMatch = message.match(/(?:\+7|8)[\s\-()]*\d[\d\s\-()]{8,}/);
-const nameMatch = message.match(/меня зовут\s+([A-Za-zА-Яа-яЁё\-]+)/i);
 let leadCreated = false;
-
-if (leadIntent) {
-  await insertEvent('lead_started', {
-    source: 'web',
-    sessionId,
-    message,
-  });
-}
-
-if (leadIntent && phoneMatch) {
-  const leadPayload = {
-    patient_name: nameMatch?.[1] ?? patientName,
-    phone: phoneMatch[0],
-    telegram_username: null,
-    source: 'web',
-    service_interest: message.slice(0, 180),
-    desired_date: null,
-    notes: message,
-    status: 'new',
-  };
-
+if (willCreateLead) {
   await supabase('/rest/v1/leads', {
     method: 'POST',
     headers: { Prefer: 'return=representation' },
-    body: leadPayload,
+    body: {
+      patient_name: effectiveName,
+      phone: phoneNormalized,
+      telegram_username: null,
+      source: 'web',
+      service_interest: message.slice(0, 180),
+      desired_date: null,
+      notes: message,
+      status: 'new',
+    },
   });
-
-  await insertEvent('lead_created', {
-    source: 'web',
-    sessionId,
-    phone: phoneMatch[0],
-  });
-
+  await insertEvent('lead_started', { source: 'web', sessionId, message });
+  await insertEvent('lead_created', { source: 'web', sessionId, phone: phoneNormalized });
   leadCreated = true;
-
-  if (!/заявк/i.test(answer)) {
-    answer += '\n\nЯ зафиксировал заявку и передал ее администратору клиники.';
-  }
-} else if (leadIntent) {
-  answer += '\n\nЕсли хотите, напишите имя и телефон, и я передам заявку администратору клиники.';
+  const greet = effectiveName ? `Спасибо, ${effectiveName}!` : 'Спасибо!';
+  answer = `${greet} Заявка зафиксирована, администратор клиники перезвонит на ${phoneNormalized}. Если нужно что-то уточнить — напишите.`;
 }
 
 await insertMessage(conversation.id, 'assistant', answer);
@@ -705,10 +700,36 @@ try {
   context = '';
 }
 
+// 3b. Lead intent detection (before LLM so we can tell the model).
+const leadIntentPatterns = [
+  /запис/i, /заявк/i, /перезвон/i, /оставить контакт/i, /связаться/i,
+  /хочу\s+(?:на\s+)?(?:прием|приём|консультац)/i,
+  /нужно\s+записаться/i, /можно\s+записаться/i,
+];
+const leadIntent = leadIntentPatterns.some((p) => p.test(userText));
+const phoneMatchRaw = userText.match(/(?:\+7|8)[\s\-()]*\d[\d\s\-()]{8,}/);
+const phoneNormalized = phoneMatchRaw ? phoneMatchRaw[0].replace(/[\s()\-]/g, '').trim() : null;
+const explicitName = userText.match(/меня зовут\s+([А-ЯЁа-яёA-Za-z\-]+)/i);
+let patientName = explicitName ? explicitName[1] : null;
+if (!patientName) {
+  const nameCandidate = userText.match(/(?:^|[^A-Za-zА-Яа-яЁё])([А-ЯЁ][а-яё]{1,})\b/);
+  if (nameCandidate) patientName = nameCandidate[1];
+}
+
+// Any message with a phone number is treated as a lead — the bot already
+// asked for it, so providing a number is the user's way of confirming.
+const willCreateLead = Boolean(phoneNormalized);
+
+if (leadIntent && !willCreateLead) {
+  await insertEvent('lead_started', { source: 'telegram', telegramUserId });
+}
+
 const systemPrompt = [
   'Ты AI-помощник администратора клиники.',
   'Ты отвечаешь только на административные вопросы: цены, режим работы, подготовка к визиту, правила записи и сбор контактов.',
   'Ты не ставишь диагнозы и не даешь медицинские рекомендации как врач.',
+  'Важно про заявки: если пользователь присылает телефон (и желательно имя), система АВТОМАТИЧЕСКИ создаст заявку и передаст её администратору. Никогда не говори "я не могу создать заявку" — это неправда.',
+  'Если пользователь хочет записаться, но телефон ещё не прислал — коротко попроси имя и номер телефона.',
   'Если в контексте не хватает фактов, честно говори, что это нужно уточнить у администратора.',
   context ? `Контекст из базы знаний:\n${context}` : 'Контекст из базы знаний пока пуст.',
 ].join('\n\n');
@@ -735,27 +756,14 @@ try {
   answer = 'Не удалось обратиться к модели. Попробуйте позже.';
 }
 
-// 4. Lead intent.
-const leadIntentPatterns = [
-  /запис/i, /заявк/i, /перезвон/i, /оставить контакт/i, /связаться/i,
-  /хочу\s+(?:на\s+)?(?:прием|приём|консультац)/i,
-  /нужно\s+записаться/i, /можно\s+записаться/i,
-];
-const leadIntent = leadIntentPatterns.some((p) => p.test(userText));
-const phoneMatch = userText.match(/(?:\+7|8)[\s\-()]*\d[\d\s\-()]{8,}/);
-const nameMatch = userText.match(/меня зовут\s+([A-Za-zА-Яа-яЁё\-]+)/i);
-
-if (leadIntent) {
-  await insertEvent('lead_started', { source: 'telegram', telegramUserId });
-}
-
-if (leadIntent && phoneMatch) {
+let leadCreated = false;
+if (willCreateLead) {
   await supabase('/rest/v1/leads', {
     method: 'POST',
     headers: { Prefer: 'return=representation' },
     body: {
-      patient_name: nameMatch?.[1] ?? null,
-      phone: phoneMatch[0],
+      patient_name: patientName,
+      phone: phoneNormalized,
       telegram_username: telegramUsername,
       source: 'telegram',
       service_interest: userText.slice(0, 180),
@@ -764,12 +772,13 @@ if (leadIntent && phoneMatch) {
       status: 'new',
     },
   });
-  await insertEvent('lead_created', { source: 'telegram', telegramUserId, phone: phoneMatch[0] });
-  if (!/заявк/i.test(answer)) {
-    answer += '\n\nЯ зафиксировал заявку и передал ее администратору клиники.';
-  }
-} else if (leadIntent) {
-  answer += '\n\nЕсли хотите, напишите имя и телефон — я передам заявку администратору клиники.';
+  await insertEvent('lead_started', { source: 'telegram', telegramUserId });
+  await insertEvent('lead_created', { source: 'telegram', telegramUserId, phone: phoneNormalized });
+  leadCreated = true;
+  // Override model response: the LLM sometimes says "не могу создать заявку".
+  // Replace with an explicit confirmation so the user sees consistent behaviour.
+  const greet = patientName ? `Спасибо, ${patientName}!` : 'Спасибо!';
+  answer = `${greet} Заявка зафиксирована, администратор клиники перезвонит на ${phoneNormalized}. Если нужно что-то уточнить — напишите.`;
 }
 
 await insertMessage(conversation.id, 'assistant', answer);
