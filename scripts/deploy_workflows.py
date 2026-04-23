@@ -313,7 +313,7 @@ const phoneNormalized = phoneMatchRaw ? phoneMatchRaw[0].replace(/[\s()\-]/g, ''
 const explicitName = message.match(/меня зовут\s+([А-ЯЁа-яёA-Za-z\-]+)/i);
 let detectedName = explicitName ? explicitName[1] : null;
 if (!detectedName) {
-  const nameCandidate = message.match(/(?:^|[^A-Za-zА-Яа-яЁё])([А-ЯЁ][а-яё]{1,})\b/);
+  const nameCandidate = message.match(/(?:^|[^A-Za-zА-Яа-яЁё])([А-ЯЁ][а-яё]{1,})/);
   if (nameCandidate) detectedName = nameCandidate[1];
 }
 const effectiveName = patientName ?? detectedName;
@@ -712,7 +712,7 @@ const phoneNormalized = phoneMatchRaw ? phoneMatchRaw[0].replace(/[\s()\-]/g, ''
 const explicitName = userText.match(/меня зовут\s+([А-ЯЁа-яёA-Za-z\-]+)/i);
 let patientName = explicitName ? explicitName[1] : null;
 if (!patientName) {
-  const nameCandidate = userText.match(/(?:^|[^A-Za-zА-Яа-яЁё])([А-ЯЁ][а-яё]{1,})\b/);
+  const nameCandidate = userText.match(/(?:^|[^A-Za-zА-Яа-яЁё])([А-ЯЁ][а-яё]{1,})/);
   if (nameCandidate) patientName = nameCandidate[1];
 }
 
