@@ -1000,11 +1000,19 @@ def build_workflow(name: str, path: str, js_code: str) -> dict:
                     "httpMethod": "POST",
                     "path": path,
                     "responseMode": "lastNode",
+                    "responseData": "firstEntryJson",
+                    "options": {
+                        "responseHeaders": {
+                            "entries": [
+                                {"name": "Content-Type", "value": "application/json"}
+                            ]
+                        }
+                    },
                 },
                 "id": "Webhook_1",
                 "name": "Webhook",
                 "type": "n8n-nodes-base.webhook",
-                "typeVersion": 1,
+                "typeVersion": 2,
                 "position": [260, 300],
                 "webhookId": path,
             },
